@@ -21,5 +21,13 @@ namespace CSharpToTypescriptDefine
     public class Person
     {
         public int Id { get; set; }
+        public KType KType { get; set; }
+
     }
+}
+
+public enum KType
+{
+    aaa,
+    bbb
 }

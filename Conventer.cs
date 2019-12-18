@@ -92,7 +92,8 @@ public class Conventer
             foreach ((var _, var define) in defines)
             {
                 var defineType = define.Enums == null ? "interface" : "enum";
-                builder.AppendLine($"   {defineType} {define.Name} {{");
+                var declare = string.IsNullOrWhiteSpace(define.Namespace) ? "declare " : string.Empty;
+                builder.AppendLine($"   {declare}{defineType} {define.Name} {{");
 
                 if (define.Enums != null)
                 {
@@ -102,15 +103,21 @@ public class Conventer
                     }
                 }
 
-                foreach (var item in define.Properties)
+                if (define.Properties != null)
                 {
-                    builder.AppendLine($"       {item.Name}:{item.Type};");
+                    foreach (var item in define.Properties)
+                    {
+                        builder.AppendLine($"       {item.Name}:{item.Type};");
+                    }
                 }
 
-                foreach (var item in define.Methods)
+                if (define.Methods != null)
                 {
-                    var @params = item.Params.Select(s => $"{s.Name}:{s.Type}");
-                    builder.AppendLine($"       {item.Name}({string.Join(",", @params)}):{item.ReturnType};");
+                    foreach (var item in define.Methods)
+                    {
+                        var @params = item.Params.Select(s => $"{s.Name}:{s.Type}");
+                        builder.AppendLine($"       {item.Name}({string.Join(",", @params)}):{item.ReturnType};");
+                    }
                 }
 
                 builder.AppendLine($"   }}");
