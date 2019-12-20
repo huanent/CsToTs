@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 
 public class Conventer
@@ -9,6 +11,8 @@ public class Conventer
     {
         public string Namespace { get; set; }
         public string Name { get; set; }
+        public string Discription { get; set; }
+        public List<Type> Extends { get; set; }
         public List<Property> Properties { get; set; }
         public List<Method> Methods { get; set; }
         public Dictionary<string, string> Enums { get; set; }
@@ -18,6 +22,7 @@ public class Conventer
     {
         public string Type { get; set; }
         public string Name { get; set; }
+        public string Discription { get; set; }
     }
 
     class Method
@@ -25,6 +30,7 @@ public class Conventer
         public string Name { get; set; }
         public string ReturnType { get; set; }
         public List<Param> Params { get; set; }
+        public string Discription { get; set; }
     }
 
     class Param
@@ -54,6 +60,7 @@ public class Conventer
         [typeof(bool)] = "boolean",
         [typeof(object)] = "any",
         [typeof(void)] = "void",
+        [typeof(DateTime)] = "Date",
     };
 
     static string[] skipMthods = new string[] { "GetType", "ToString", "Equals", "GetHashCode" };
@@ -62,13 +69,14 @@ public class Conventer
     {
         void Recursion(Type t)
         {
-            if (type.FullName.StartsWith("System")) return;
+            if (IsSystemType(t)) return;
 
             var define = TypeToDefine(t);
             _defines.Add(t, define);
 
-            while (_queue.TryDequeue(out var nextType))
+            while (_queue.Any())
             {
+                var nextType = _queue.Dequeue();
                 if (_defines.ContainsKey(nextType)) continue;
                 Recursion(nextType);
             }
@@ -81,7 +89,6 @@ public class Conventer
     string DefinesToString(Type type)
     {
         var builder = new StringBuilder();
-        builder.AppendLine($"declare const k: {GetNamespace(type)}{type.Name};");
         foreach (var defines in _defines.GroupBy(global => global.Value.Namespace))
         {
             if (!string.IsNullOrWhiteSpace(defines.Key))
@@ -89,34 +96,47 @@ public class Conventer
                 builder.AppendLine($"declare namespace {defines.Key} {{");
             }
 
-            foreach ((var _, var define) in defines)
+            foreach (var group in defines)
             {
-                var defineType = define.Enums == null ? "interface" : "enum";
+                var define = group.Value;
                 var declare = string.IsNullOrWhiteSpace(define.Namespace) ? "declare " : string.Empty;
-                builder.AppendLine($"   {declare}{defineType} {define.Name} {{");
 
-                if (define.Enums != null)
+                if (define.Enums == null)
                 {
+                    var extendList = define.Extends.Where(w => _defines.ContainsKey(w)).Select(s => $"{GetNamespace(s)}{_defines[s].Name}");
+                    var extends = extendList.Any() ? $"extends {string.Join(",", extendList)} " : string.Empty;
+                    builder.AppendLine($"   {declare}interface {define.Name} {extends} {{");
+
+                    if (define.Properties != null)
+                    {
+                        foreach (var item in define.Properties)
+                        {
+                            if (item.Discription != null)
+                            {
+                                builder.AppendLine($"       /** {item.Discription} */");
+                            }
+
+                            builder.AppendLine($"       {item.Name}:{item.Type};");
+                        }
+                    }
+
+                    if (define.Methods != null)
+                    {
+                        foreach (var item in define.Methods)
+                        {
+                            var @params = item.Params.Select(s => $"{s.Name}:{s.Type}");
+                            builder.AppendLine($"       {item.Name}({string.Join(",", @params)}):{item.ReturnType};");
+                        }
+                    }
+
+                }
+                else
+                {
+                    builder.AppendLine($"   {declare}enum {define.Name} {{");
+
                     foreach (var item in define.Enums)
                     {
                         builder.AppendLine($"       {item.Key}={item.Value},");
-                    }
-                }
-
-                if (define.Properties != null)
-                {
-                    foreach (var item in define.Properties)
-                    {
-                        builder.AppendLine($"       {item.Name}:{item.Type};");
-                    }
-                }
-
-                if (define.Methods != null)
-                {
-                    foreach (var item in define.Methods)
-                    {
-                        var @params = item.Params.Select(s => $"{s.Name}:{s.Type}");
-                        builder.AppendLine($"       {item.Name}({string.Join(",", @params)}):{item.ReturnType};");
                     }
                 }
 
@@ -137,7 +157,7 @@ public class Conventer
     {
         Define define;
 
-        if (type.IsClass || type.IsInterface)
+        if (type.IsClass || type.IsInterface || (type.IsValueType && !type.IsEnum))
         {
             define = ConvertClassOrInterface(type);
         }
@@ -150,20 +170,34 @@ public class Conventer
             throw new InvalidOperationException();
         }
 
-        define.Name = type.Name;
+        define.Name = GetTypeName(type);
         define.Namespace = GetNamespace(type, false);
         return define;
     }
 
+    string GetTypeName(Type type)
+    {
+        var name = type.Name;
+
+        if (type.IsAnsiClass && name.EndsWith("&"))
+        {
+            name = name.Substring(0, name.Length - 1);
+        }
+
+        return name;
+    }
+
     Define ConvertClassOrInterface(Type type)
     {
+
         var properties = type.GetProperties()
                             .Where(p => p.GetMethod.IsPublic)
                             .Select(s => new Property
                             {
                                 Name = CamelCaseName(s.Name),
-                                Type = TypeString(type, s.PropertyType)
-                            }).ToList();
+                                Type = TypeString(type, s.PropertyType),
+                                Discription = GetDiscription(s)
+                            }).GroupBy(g => g.Name).Select(s => s.First()).ToList();
 
         var methods = type.GetMethods()
                             .Where(p => p.IsPublic && !p.IsSpecialName && !skipMthods.Contains(p.Name))
@@ -172,12 +206,19 @@ public class Conventer
                                 Name = CamelCaseName(s.Name),
                                 Params = s.GetParameters().Select(ss => new Param { Name = ss.Name, Type = TypeString(type, ss.ParameterType) }).ToList(),
                                 ReturnType = TypeString(type, s.ReturnType),
+                                Discription = GetDiscription(s)
                             }).ToList();
+
+        var extends = new List<Type>();
+        extends.AddRange(type.GetInterfaces());
+        if (type.BaseType != null) extends.Add(type.BaseType);
 
         return new Define
         {
             Methods = methods,
-            Properties = properties
+            Properties = properties,
+            Extends = extends,
+            Discription = GetDiscription(type)
         };
     }
 
@@ -206,12 +247,12 @@ public class Conventer
 
     string TypeString(Type parentType, Type type)
     {
-        var @namespace = GetNamespace(type);
-        var parentNamespace = GetNamespace(parentType);
-        if (parentNamespace == @namespace) @namespace = string.Empty;
         var arrayType = GetArrayOrEnumerableType(type);
         var nullableType = GetNullableType(type);
         var typeToUse = nullableType ?? arrayType ?? type;
+        var @namespace = GetNamespace(typeToUse);
+        var parentNamespace = GetNamespace(parentType);
+        if (parentNamespace == @namespace) @namespace = string.Empty;
         var suffix = "";
         suffix = arrayType != null ? "[]" : suffix;
         suffix = nullableType != null ? "|null" : suffix;
@@ -220,9 +261,10 @@ public class Conventer
 
     string GetNamespace(Type type, bool suffix = true)
     {
+        if (type.FullName == null || type.IsGenericType) return string.Empty;
         var arr = type.FullName.Split('.');
         if (arr.FirstOrDefault() == "System") return "";
-        var @namespace = string.Join('.', arr.Take(arr.Length - 1));
+        var @namespace = string.Join(".", arr.Take(arr.Length - 1));
 
         if (suffix)
         {
@@ -273,6 +315,11 @@ public class Conventer
             return convertedTypes[typeToUse];
         }
 
+        if (typeToUse.IsGenericType || IsSystemType(typeToUse))
+        {
+            return "any";
+        }
+
         if (typeToUse.IsConstructedGenericType && typeToUse.GetGenericTypeDefinition() == typeof(IDictionary<,>))
         {
             var keyType = typeToUse.GenericTypeArguments[0];
@@ -282,7 +329,21 @@ public class Conventer
 
         _queue.Enqueue(typeToUse);
 
-        return typeToUse.Name;
+        return GetTypeName(typeToUse);
     }
 
+    bool IsSystemType(Type type)
+    {
+        return type.FullName?.StartsWith("System") ?? true;
+    }
+
+    string GetDiscription(MemberInfo memberInfo)
+    {
+        var atr = memberInfo.GetCustomAttribute(typeof(DescriptionAttribute));
+        if (atr is DescriptionAttribute discription)
+        {
+            return discription.Description;
+        }
+        return null;
+    }
 }

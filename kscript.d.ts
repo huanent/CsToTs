@@ -1,11 +1,10 @@
-declare const k: CSharpToTypescriptDefine.KScript;
 declare namespace CSharpToTypescriptDefine {
-   interface KScript {
+   interface KScript  {
        user:User;
        execute(code:string,user:User):void;
    }
 
-   interface User {
+   interface User  {
        name:string;
        pwd:string;
        age:number;
